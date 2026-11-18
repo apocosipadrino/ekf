@@ -1,0 +1,245 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>EKF &middot; Localizaci&oacute;n 2D</title>
+<style>
+:root{
+  --hatch-widget-bg:#ffffff;
+  --hatch-widget-surface:#ffffff;
+  --hatch-widget-surface-muted:#f3f4f6;
+  --hatch-widget-text:#111827;
+  --hatch-widget-muted:#6b7280;
+  --hatch-widget-border:#d1d5db;
+  --hatch-widget-accent:#2563eb;
+  --hatch-widget-on-accent:#ffffff;
+  --hatch-widget-focus:#2563eb;
+  --hatch-widget-shadow:rgba(0,0,0,0.1);
+}
+@media (prefers-color-scheme: dark){
+  :root{
+    --hatch-widget-bg:#111827;
+    --hatch-widget-surface:#1f2937;
+    --hatch-widget-surface-muted:#111827;
+    --hatch-widget-text:#f9fafb;
+    --hatch-widget-muted:#9ca3af;
+    --hatch-widget-border:#374151;
+    --hatch-widget-accent:#3b82f6;
+    --hatch-widget-on-accent:#ffffff;
+    --hatch-widget-focus:#3b82f6;
+    --hatch-widget-shadow:rgba(0,0,0,0.4);
+  }
+}
+body{margin:0;padding:16px;background:var(--hatch-widget-bg);font-family:system-ui,-apple-system,"Segoe UI",sans-serif;}
+</style>
+</head>
+<body>
+<div style="box-sizing:border-box;font-family:inherit;color:var(--hatch-widget-text);max-width:560px;margin:0 auto;">
+  <div style="display:flex;justify-content:space-between;align-items:baseline;gap:8px;">
+    <strong>EKF &middot; Localizaci&oacute;n 2D</strong>
+    <span style="color:var(--hatch-widget-muted);font-size:12px;">predicci&oacute;n + actualizaci&oacute;n</span>
+  </div>
+  <canvas id="ekf" style="width:100%;aspect-ratio:1/1;display:block;border:1px solid var(--hatch-widget-border);border-radius:10px;background:var(--hatch-widget-surface-muted);margin-top:8px;"></canvas>
+  <div style="display:flex;gap:6px;margin-top:8px;flex-wrap:wrap;">
+    <button id="btnAuto" class="ekfbtn">Auto</button>
+    <button id="btnPred" class="ekfbtn">Predecir</button>
+    <button id="btnUpd" class="ekfbtn">Actualizar</button>
+    <button id="btnReset" class="ekfbtn">Reiniciar</button>
+  </div>
+  <div style="margin-top:10px;font-size:13px;display:grid;gap:6px;">
+    <label>Ruido de proceso <input id="rngQ" type="range" min="1" max="10" value="5" style="vertical-align:middle;width:130px;"> <span id="lblQ"></span></label>
+    <label>Ruido de medici&oacute;n <input id="rngR" type="range" min="1" max="10" value="4" style="vertical-align:middle;width:130px;"> <span id="lblR"></span></label>
+  </div>
+  <div id="stats" style="margin-top:8px;font-size:13px;color:var(--hatch-widget-muted);"></div>
+  <div id="status" style="margin-top:4px;font-size:13px;"></div>
+  <div style="margin-top:8px;font-size:12px;color:var(--hatch-widget-muted);line-height:1.5;">
+    Verde: pose real &middot; Azul: estimaci&oacute;n EKF + elipse 95% &middot; Gris: odometr&iacute;a sola, sin correcciones &middot; &Aacute;mbar: landmarks y mediciones.<br>
+    Predicci&oacute;n: el modelo mueve la estimaci&oacute;n y la incertidumbre crece. Actualizaci&oacute;n: la medici&oacute;n corrige y la incertidumbre se encoge.
+  </div>
+</div>
+<style>
+  .ekfbtn{background:var(--hatch-widget-surface);color:var(--hatch-widget-text);border:1px solid var(--hatch-widget-border);padding:6px 12px;border-radius:8px;cursor:pointer;font-size:13px;}
+  .ekfbtn.active{background:var(--hatch-widget-accent);color:var(--hatch-widget-on-accent);border-color:var(--hatch-widget-accent);}
+</style>
+<script>
+(function(){
+  var canvas=document.getElementById('ekf');
+  var ctx=canvas.getContext('2d');
+  var W=10, DT=0.15, V=1.0, OM=0.30;
+  var LMS=[{x:2,y:2},{x:2,y:8},{x:8,y:2},{x:8,y:8}];
+  var SENSOR_RANGE=7.5;
+  var trueS,est,P,odom,trails,step,lastMeas,lastMeasAt,autoTimer,tick;
+  var scale=40,cw=300,ch=300,spare=null;
+
+  function randn(){
+    if(spare!==null){var v=spare;spare=null;return v;}
+    var u=0;while(u===0)u=Math.random();
+    var r=Math.sqrt(-2*Math.log(u)),t=2*Math.PI*Math.random();
+    spare=r*Math.sin(t);return r*Math.cos(t);
+  }
+  function normAng(a){while(a>Math.PI)a-=2*Math.PI;while(a<-Math.PI)a+=2*Math.PI;return a;}
+  function mul(A,B){var r=[];for(var i=0;i<A.length;i++){r.push([]);for(var j=0;j<B[0].length;j++){var s=0;for(var k=0;k<B.length;k++)s+=A[i][k]*B[k][j];r[i].push(s);}}return r;}
+  function tr(A){return A[0].map(function(_,j){return A.map(function(row){return row[j];});});}
+  function add(A,B){return A.map(function(row,i){return row.map(function(v,j){return v+B[i][j];});});}
+  function inv2(M){var d=M[0][0]*M[1][1]-M[0][1]*M[1][0];return [[M[1][1]/d,-M[0][1]/d],[-M[1][0]/d,M[0][0]/d]];}
+  function matVec(M,v){return M.map(function(row){return row.reduce(function(s,c,j){return s+c*v[j];},0);});}
+  function sym(M){return [[M[0][0],(M[0][1]+M[1][0])/2,(M[0][2]+M[2][0])/2],[(M[1][0]+M[0][1])/2,M[1][1],(M[1][2]+M[2][1])/2],[(M[2][0]+M[0][2])/2,(M[2][1]+M[1][2])/2,M[2][2]]];}
+
+  function getQ(){var q=+document.getElementById('rngQ').value*0.002;return [[q,0,0],[0,q,0],[0,0,q*0.6]];}
+  function getR(){var k=+document.getElementById('rngR').value;var sr=0.05+k*0.03,sb=0.015+k*0.012;return {M:[[sr*sr,0],[0,sb*sb]],sr:sr,sb:sb};}
+
+  function predict(){
+    var th=trueS.th;
+    trueS.x+=V*Math.cos(th)*DT;trueS.y+=V*Math.sin(th)*DT;trueS.th=normAng(th+OM*DT);
+    var k=+document.getElementById('rngQ').value;
+    var vn=V+randn()*(0.02+k*0.012),wn=OM+randn()*(0.008+k*0.005);
+    odom.x+=vn*Math.cos(odom.th)*DT;odom.y+=vn*Math.sin(odom.th)*DT;odom.th=normAng(odom.th+wn*DT);
+    var eth=est.th,q=getQ();
+    est.x+=V*Math.cos(eth)*DT;est.y+=V*Math.sin(eth)*DT;est.th=normAng(eth+OM*DT);
+    var F=[[1,0,-V*Math.sin(eth)*DT],[0,1,V*Math.cos(eth)*DT],[0,0,1]];
+    P=sym(add(mul(mul(F,P),tr(F)),q));
+    step++;
+    trails.t.push([trueS.x,trueS.y]);trails.e.push([est.x,est.y]);trails.o.push([odom.x,odom.y]);
+    if(trails.t.length>900){trails.t.shift();trails.e.shift();trails.o.shift();}
+  }
+
+  function update(){
+    var R=getR();lastMeas=[];
+    for(var i=0;i<LMS.length;i++){
+      var lm=LMS[i];
+      var dxT=lm.x-trueS.x,dyT=lm.y-trueS.y,rT=Math.hypot(dxT,dyT);
+      if(rT>SENSOR_RANGE)continue;
+      var z=[rT+randn()*R.sr,normAng(Math.atan2(dyT,dxT)-trueS.th+randn()*R.sb)];
+      var dx=lm.x-est.x,dy=lm.y-est.y,q2=dx*dx+dy*dy,r=Math.sqrt(q2);
+      var zPred=[r,normAng(Math.atan2(dy,dx)-est.th)];
+      var y=[z[0]-zPred[0],normAng(z[1]-zPred[1])];
+      var H=[[-dx/r,-dy/r,0],[dy/q2,-dx/q2,-1]];
+      var S=add(mul(mul(H,P),tr(H)),R.M);
+      var K=mul(mul(P,tr(H)),inv2(S));
+      var d=matVec(K,y);
+      est.x+=d[0];est.y+=d[1];est.th=normAng(est.th+d[2]);
+      var KH=mul(K,H);
+      var IKH=[[1-KH[0][0],-KH[0][1],-KH[0][2]],[-KH[1][0],1-KH[1][1],-KH[1][2]],[-KH[2][0],-KH[2][1],1-KH[2][2]]];
+      P=sym(mul(IKH,P));
+      lastMeas.push(lm);
+    }
+    lastMeasAt=Date.now();
+  }
+
+  function X(x){return 14+x*scale;}
+  function Y(y){return ch-14-y*scale;}
+
+  function draw(){
+    if(!trails)return;
+    ctx.clearRect(0,0,cw,ch);
+    ctx.strokeStyle='rgba(128,128,128,0.25)';ctx.lineWidth=1;
+    for(var g=0;g<=W;g++){
+      ctx.beginPath();ctx.moveTo(X(g),Y(0));ctx.lineTo(X(g),Y(W));ctx.stroke();
+      ctx.beginPath();ctx.moveTo(X(0),Y(g));ctx.lineTo(X(W),Y(g));ctx.stroke();
+    }
+    function trail(pts,color,dash){
+      ctx.strokeStyle=color;ctx.lineWidth=2;ctx.setLineDash(dash||[]);
+      ctx.beginPath();
+      for(var i=0;i<pts.length;i++){if(i===0)ctx.moveTo(X(pts[i][0]),Y(pts[i][1]));else ctx.lineTo(X(pts[i][0]),Y(pts[i][1]));}
+      ctx.stroke();ctx.setLineDash([]);
+    }
+    trail(trails.o,'#9ca3af',[4,4]);
+    trail(trails.t,'#22c55e');
+    trail(trails.e,'#3b82f6');
+    var fade=lastMeasAt?Math.max(0,1-(Date.now()-lastMeasAt)/1200):0;
+    if(fade>0&&lastMeas.length){
+      ctx.strokeStyle='rgba(245,158,11,'+(0.6*fade)+')';ctx.setLineDash([3,3]);ctx.lineWidth=1.5;
+      for(var m=0;m<lastMeas.length;m++){
+        ctx.beginPath();ctx.moveTo(X(est.x),Y(est.y));ctx.lineTo(X(lastMeas[m].x),Y(lastMeas[m].y));ctx.stroke();
+      }
+      ctx.setLineDash([]);
+    }
+    for(var l=0;l<LMS.length;l++){
+      var lx=X(LMS[l].x),ly=Y(LMS[l].y);
+      ctx.fillStyle='#f59e0b';
+      ctx.beginPath();ctx.moveTo(lx,ly-7);ctx.lineTo(lx+5,ly);ctx.lineTo(lx,ly+7);ctx.lineTo(lx-5,ly);ctx.closePath();ctx.fill();
+      ctx.fillStyle='#f59e0b';ctx.font='11px sans-serif';ctx.fillText('L'+(l+1),lx+8,ly+4);
+    }
+    var a=P[0][0],b=P[0][1],d=P[1][1];
+    var trc=a+d,det=a*d-b*b;
+    var disc=Math.sqrt(Math.max(0,(trc/2)*(trc/2)-det));
+    var l1=Math.max(trc/2+disc,1e-6),l2=Math.max(trc/2-disc,1e-6);
+    var ang=0.5*Math.atan2(2*b,a-d),kk=2.448;
+    ctx.beginPath();
+    ctx.ellipse(X(est.x),Y(est.y),kk*Math.sqrt(l1)*scale,kk*Math.sqrt(l2)*scale,-ang,0,Math.PI*2);
+    ctx.fillStyle='rgba(59,130,246,0.15)';ctx.fill();
+    ctx.strokeStyle='rgba(59,130,246,0.8)';ctx.lineWidth=1.5;ctx.stroke();
+    robot(odom,'#9ca3af',false);
+    robot(trueS,'#22c55e',false);
+    robot(est,'#3b82f6',true);
+  }
+  function robot(s,color,fill){
+    ctx.save();ctx.translate(X(s.x),Y(s.y));ctx.rotate(-s.th);
+    ctx.beginPath();ctx.moveTo(9,0);ctx.lineTo(-6,6);ctx.lineTo(-6,-6);ctx.closePath();
+    if(fill){ctx.fillStyle=color;ctx.fill();}else{ctx.strokeStyle=color;ctx.lineWidth=2;ctx.stroke();}
+    ctx.restore();
+  }
+
+  function stats(){
+    var err=Math.hypot(trueS.x-est.x,trueS.y-est.y);
+    document.getElementById('stats').textContent='Paso '+step+'  ·  Error de estimación: '+err.toFixed(2)+' m  ·  Incertidumbre (traza P): '+(P[0][0]+P[1][1]).toFixed(3);
+  }
+  function setStatus(t){document.getElementById('status').textContent=t;}
+  function labels(){
+    var qv=+document.getElementById('rngQ').value,R=getR();
+    document.getElementById('lblQ').textContent='Q = '+(qv*0.002).toFixed(3);
+    document.getElementById('lblR').textContent='σ rango '+R.sr.toFixed(2)+' m, σ ángulo '+R.sb.toFixed(3)+' rad';
+  }
+
+  function reset(){
+    trueS={x:5,y:1.67,th:0};
+    est={x:5.4,y:2.0,th:0.15};
+    P=[[0.3,0,0],[0,0.3,0],[0,0,0.1]];
+    odom={x:5,y:1.67,th:0};
+    trails={t:[[5,1.67]],e:[[5.4,2.0]],o:[[5,1.67]]};
+    step=0;tick=0;lastMeas=[];lastMeasAt=0;
+    setStatus('Listo. Pulsa Auto o avanza paso a paso con Predecir y Actualizar.');
+    stats();draw();
+  }
+
+  function setAuto(on){
+    var btn=document.getElementById('btnAuto');
+    if(on){
+      btn.textContent='Pausar';btn.classList.add('active');
+      autoTimer=setInterval(function(){
+        predict();tick++;
+        if(tick%4===0){update();setStatus('Actualización: la medición corrigió la estimación y la elipse se encogió.');}
+        else setStatus('Predicción: el modelo avanzó y la incertidumbre creció un poco.');
+        stats();draw();
+      },90);
+    }else{
+      btn.textContent='Auto';btn.classList.remove('active');
+      clearInterval(autoTimer);autoTimer=null;
+    }
+  }
+
+  document.getElementById('btnAuto').onclick=function(){setAuto(!autoTimer);};
+  document.getElementById('btnPred').onclick=function(){setAuto(false);predict();setStatus('Predicción: la estimación avanzó con el modelo de movimiento; la elipse creció.');stats();draw();};
+  document.getElementById('btnUpd').onclick=function(){setAuto(false);update();setStatus('Actualización: las mediciones corrigieron la estimación; la elipse se encogió.');stats();draw();};
+  document.getElementById('btnReset').onclick=function(){setAuto(false);reset();};
+  document.getElementById('rngQ').oninput=labels;
+  document.getElementById('rngR').oninput=labels;
+
+  function fit(){
+    var dpr=window.devicePixelRatio||1;
+    var r=canvas.getBoundingClientRect();
+    cw=r.width;ch=r.height;
+    canvas.width=Math.max(1,Math.round(cw*dpr));
+    canvas.height=Math.max(1,Math.round(ch*dpr));
+    ctx.setTransform(dpr,0,0,dpr,0,0);
+    scale=(Math.min(cw,ch)-28)/W;
+    draw();
+  }
+  window.addEventListener('resize',fit);
+  labels();reset();fit();
+})();
+</script>
+
+</body>
+</html>
