@@ -1,9 +1,9 @@
 <!DOCTYPE html>
-<html lang="es">
+<html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>EKF &middot; Localizaci&oacute;n 2D</title>
+<title>EKF &middot; 2D Localization</title>
 <style>
 :root{
   --hatch-widget-bg:#ffffff;
@@ -37,25 +37,25 @@ body{margin:0;padding:16px;background:var(--hatch-widget-bg);font-family:system-
 <body>
 <div style="box-sizing:border-box;font-family:inherit;color:var(--hatch-widget-text);max-width:560px;margin:0 auto;">
   <div style="display:flex;justify-content:space-between;align-items:baseline;gap:8px;">
-    <strong>EKF &middot; Localizaci&oacute;n 2D</strong>
-    <span style="color:var(--hatch-widget-muted);font-size:12px;">predicci&oacute;n + actualizaci&oacute;n</span>
+    <strong>EKF &middot; 2D Localization</strong>
+    <span style="color:var(--hatch-widget-muted);font-size:12px;">predict + update</span>
   </div>
   <canvas id="ekf" style="width:100%;aspect-ratio:1/1;display:block;border:1px solid var(--hatch-widget-border);border-radius:10px;background:var(--hatch-widget-surface-muted);margin-top:8px;"></canvas>
   <div style="display:flex;gap:6px;margin-top:8px;flex-wrap:wrap;">
     <button id="btnAuto" class="ekfbtn">Auto</button>
-    <button id="btnPred" class="ekfbtn">Predecir</button>
-    <button id="btnUpd" class="ekfbtn">Actualizar</button>
-    <button id="btnReset" class="ekfbtn">Reiniciar</button>
+    <button id="btnPred" class="ekfbtn">Predict</button>
+    <button id="btnUpd" class="ekfbtn">Update</button>
+    <button id="btnReset" class="ekfbtn">Reset</button>
   </div>
   <div style="margin-top:10px;font-size:13px;display:grid;gap:6px;">
-    <label>Ruido de proceso <input id="rngQ" type="range" min="1" max="10" value="5" style="vertical-align:middle;width:130px;"> <span id="lblQ"></span></label>
-    <label>Ruido de medici&oacute;n <input id="rngR" type="range" min="1" max="10" value="4" style="vertical-align:middle;width:130px;"> <span id="lblR"></span></label>
+    <label>Process noise <input id="rngQ" type="range" min="1" max="10" value="5" style="vertical-align:middle;width:130px;"> <span id="lblQ"></span></label>
+    <label>Measurement noise <input id="rngR" type="range" min="1" max="10" value="4" style="vertical-align:middle;width:130px;"> <span id="lblR"></span></label>
   </div>
   <div id="stats" style="margin-top:8px;font-size:13px;color:var(--hatch-widget-muted);"></div>
   <div id="status" style="margin-top:4px;font-size:13px;"></div>
   <div style="margin-top:8px;font-size:12px;color:var(--hatch-widget-muted);line-height:1.5;">
-    Verde: pose real &middot; Azul: estimaci&oacute;n EKF + elipse 95% &middot; Gris: odometr&iacute;a sola, sin correcciones &middot; &Aacute;mbar: landmarks y mediciones.<br>
-    Predicci&oacute;n: el modelo mueve la estimaci&oacute;n y la incertidumbre crece. Actualizaci&oacute;n: la medici&oacute;n corrige y la incertidumbre se encoge.
+    Green: true pose &middot; Blue: EKF estimate + 95% ellipse &middot; Gray: dead reckoning alone, no corrections &middot; Amber: landmarks and measurements.<br>
+    Prediction: the model moves the estimate and uncertainty grows. Update: the measurement corrects and uncertainty shrinks.
   </div>
 </div>
 <style>
@@ -183,13 +183,13 @@ body{margin:0;padding:16px;background:var(--hatch-widget-bg);font-family:system-
 
   function stats(){
     var err=Math.hypot(trueS.x-est.x,trueS.y-est.y);
-    document.getElementById('stats').textContent='Paso '+step+'  ·  Error de estimación: '+err.toFixed(2)+' m  ·  Incertidumbre (traza P): '+(P[0][0]+P[1][1]).toFixed(3);
+    document.getElementById('stats').textContent='Step '+step+'  ·  Estimation error: '+err.toFixed(2)+' m  ·  Uncertainty (trace P): '+(P[0][0]+P[1][1]).toFixed(3);
   }
   function setStatus(t){document.getElementById('status').textContent=t;}
   function labels(){
     var qv=+document.getElementById('rngQ').value,R=getR();
     document.getElementById('lblQ').textContent='Q = '+(qv*0.002).toFixed(3);
-    document.getElementById('lblR').textContent='σ rango '+R.sr.toFixed(2)+' m, σ ángulo '+R.sb.toFixed(3)+' rad';
+    document.getElementById('lblR').textContent='σ range '+R.sr.toFixed(2)+' m, σ bearing '+R.sb.toFixed(3)+' rad';
   }
 
   function reset(){
@@ -199,18 +199,18 @@ body{margin:0;padding:16px;background:var(--hatch-widget-bg);font-family:system-
     odom={x:5,y:1.67,th:0};
     trails={t:[[5,1.67]],e:[[5.4,2.0]],o:[[5,1.67]]};
     step=0;tick=0;lastMeas=[];lastMeasAt=0;
-    setStatus('Listo. Pulsa Auto o avanza paso a paso con Predecir y Actualizar.');
+    setStatus('Ready. Press Auto or step through with Predict and Update.');
     stats();draw();
   }
 
   function setAuto(on){
     var btn=document.getElementById('btnAuto');
     if(on){
-      btn.textContent='Pausar';btn.classList.add('active');
+      btn.textContent='Pause';btn.classList.add('active');
       autoTimer=setInterval(function(){
         predict();tick++;
-        if(tick%4===0){update();setStatus('Actualización: la medición corrigió la estimación y la elipse se encogió.');}
-        else setStatus('Predicción: el modelo avanzó y la incertidumbre creció un poco.');
+        if(tick%4===0){update();setStatus('Update: the measurement corrected the estimate and the ellipse shrank.');}
+        else setStatus('Prediction: the model stepped forward and uncertainty grew a bit.');
         stats();draw();
       },90);
     }else{
@@ -220,8 +220,8 @@ body{margin:0;padding:16px;background:var(--hatch-widget-bg);font-family:system-
   }
 
   document.getElementById('btnAuto').onclick=function(){setAuto(!autoTimer);};
-  document.getElementById('btnPred').onclick=function(){setAuto(false);predict();setStatus('Predicción: la estimación avanzó con el modelo de movimiento; la elipse creció.');stats();draw();};
-  document.getElementById('btnUpd').onclick=function(){setAuto(false);update();setStatus('Actualización: las mediciones corrigieron la estimación; la elipse se encogió.');stats();draw();};
+  document.getElementById('btnPred').onclick=function(){setAuto(false);predict();setStatus('Prediction: the estimate moved with the motion model; the ellipse grew.');stats();draw();};
+  document.getElementById('btnUpd').onclick=function(){setAuto(false);update();setStatus('Update: the measurements corrected the estimate; the ellipse shrank.');stats();draw();};
   document.getElementById('btnReset').onclick=function(){setAuto(false);reset();};
   document.getElementById('rngQ').oninput=labels;
   document.getElementById('rngR').oninput=labels;
