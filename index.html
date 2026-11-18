@@ -40,6 +40,7 @@ body{margin:0;padding:16px;background:var(--hatch-widget-bg);font-family:system-
     <strong>EKF &middot; 2D Localization</strong>
     <span style="color:var(--hatch-widget-muted);font-size:12px;">predict + update</span>
   </div>
+  <div style="margin-top:8px;font-size:13px;line-height:1.55;color:var(--hatch-widget-muted);">The Extended Kalman Filter (EKF) is a method for estimating the state of a nonlinear system from noisy measurements. It alternates two steps: predict the state forward with a motion model, linearizing it with Jacobians around the current estimate, and update the estimate with sensor measurements using the Kalman gain. It is used to localize robots, track moving objects, and fuse data from multiple sensors, such as wheel odometry with LiDAR or GPS with an IMU.</div>
   <canvas id="ekf" style="width:100%;aspect-ratio:1/1;display:block;border:1px solid var(--hatch-widget-border);border-radius:10px;background:var(--hatch-widget-surface-muted);margin-top:8px;"></canvas>
   <div style="display:flex;gap:6px;margin-top:8px;flex-wrap:wrap;">
     <button id="btnAuto" class="ekfbtn">Auto</button>
