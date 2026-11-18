@@ -18,5 +18,3 @@ Controls: Auto / Predict / Update / Reset, plus sliders for process noise (Q)
 and measurement noise (R). The filter linearizes the nonlinear motion and
 measurement models with Jacobians around the current estimate — that is the
 "extended" in EKF.
-
-Built as a learning aid for interview prep (localization / SLAM fundamentals).
